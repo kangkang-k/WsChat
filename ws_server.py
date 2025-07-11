@@ -19,6 +19,7 @@ def encrypt_token(data):
     encrypted_data = base64.b64encode(iv + ct_bytes).decode('utf-8')
     return encrypted_data
 
+
 async def verify_user(username, token):
     conn = sqlite3.connect('chat.db')
     cursor = conn.cursor()
@@ -29,7 +30,6 @@ async def verify_user(username, token):
     if result and result[0] == token:
         return True
     return False
-
 
 
 async def login(message, websocket):
@@ -118,6 +118,7 @@ async def chat(message, websocket):
 
     return {"status": "success", "message": "Message sent successfully.", "token": encrypted_token}
 
+
 async def pals(message):
     username = message.get('username')
     token = message.get('token')
@@ -135,13 +136,14 @@ async def pals(message):
 
     return {"status": "success", "pals": pals_list}
 
+
 async def handle_action(message, websocket):
     if message.get('action') == 'login':
         result = await login(message, websocket)
     elif message.get('action') == 'register':
         result = await register(message)
     elif message.get('action') == 'chat':
-        result = await chat(message,websocket)
+        result = await chat(message, websocket)
     elif message.get('action') == 'logout':
         result = await logout(websocket)
     elif message.get('action') == 'pals':
@@ -162,6 +164,7 @@ async def logout(websocket):
             conn.commit()
             conn.close()
             break
+    await websocket.close()
     return {"message": "Logout successful"}
 
 
