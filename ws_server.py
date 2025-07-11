@@ -152,7 +152,7 @@ async def handle(websocket):
 
 
 async def main():
-    start_server = await websockets.serve(handle, "localhost", 8765)
+    start_server = await websockets.serve(handle, "0.0.0.0", 8765)
     print("Listening on ws://localhost:8765")
     await start_server.wait_closed()
 
