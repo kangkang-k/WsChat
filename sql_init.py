@@ -1,20 +1,20 @@
 import sqlite3
 
-# def init_db():
-#     conn = sqlite3.connect('chat.db')
-#     cursor = conn.cursor()
-#     cursor.execute('''
-#         CREATE TABLE IF NOT EXISTS users (
-#             username TEXT PRIMARY KEY,
-#             password TEXT,
-#             islogin BOOLEAN DEFAULT FALSE,
-#             token TEXT
-#         )
-#     ''')
-#     conn.commit()
-#     conn.close()
-#
-# init_db()
+def init_db():
+    conn = sqlite3.connect('chat.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT,
+            islogin BOOLEAN DEFAULT FALSE,
+            token TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 
 
