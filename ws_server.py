@@ -19,6 +19,18 @@ def encrypt_token(data):
     encrypted_data = base64.b64encode(iv + ct_bytes).decode('utf-8')
     return encrypted_data
 
+async def verify_user(username, token):
+    conn = sqlite3.connect('chat.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT token FROM users WHERE username = ?', (username,))
+    result = cursor.fetchone()
+    conn.close()
+
+    if result and result[0] == token:
+        return True
+    return False
+
+
 
 async def login(message, websocket):
     username = message.get('username')
@@ -70,20 +82,17 @@ async def register(message):
         return {"message": "Registered successfully"}
 
 
-async def chat(message):
+async def chat(message, websocket):
     sender = message.get('sender')
     receiver = message.get('receiver')
     content = message.get('content')
     token = message.get('token')
 
+    if not await verify_user(sender, token):
+        return {"status": "error", "message": "Invalid token or user."}
+
     conn = sqlite3.connect('chat.db')
     cursor = conn.cursor()
-
-    cursor.execute('SELECT token FROM users WHERE username = ?', (sender,))
-    result = cursor.fetchone()
-    if not result or result[0] != token:
-        conn.close()
-        return {"status": "error", "message": "Invalid token."}
 
     cursor.execute('SELECT islogin FROM users WHERE username = ?', (receiver,))
     result = cursor.fetchone()
@@ -109,6 +118,22 @@ async def chat(message):
 
     return {"status": "success", "message": "Message sent successfully.", "token": encrypted_token}
 
+async def pals(message):
+    username = message.get('username')
+    token = message.get('token')
+
+    if not await verify_user(username, token):
+        return {"status": "error", "message": "Invalid token or user."}
+
+    conn = sqlite3.connect('chat.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT distinct receiver FROM chat_messages WHERE sender = ?', (username,))
+    result = cursor.fetchall()
+    conn.close()
+
+    pals_list = [item[0] for item in result]
+
+    return {"status": "success", "pals": pals_list}
 
 async def handle_action(message, websocket):
     if message.get('action') == 'login':
@@ -116,9 +141,11 @@ async def handle_action(message, websocket):
     elif message.get('action') == 'register':
         result = await register(message)
     elif message.get('action') == 'chat':
-        result = await chat(message)
+        result = await chat(message,websocket)
     elif message.get('action') == 'logout':
         result = await logout(websocket)
+    elif message.get('action') == 'pals':
+        result = await pals(message)
     else:
         result = {"message": "Unknown action"}
     return result
