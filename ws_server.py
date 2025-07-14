@@ -6,10 +6,30 @@ import time
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import base64
+from contextlib import contextmanager
 
 AES_KEY = b"ududlrlrbaba1234"
 
 connected_users = {}
+
+
+# 启用WAL模式
+def enable_wal_mode():
+    conn = sqlite3.connect('chat.db')
+    cursor = conn.cursor()
+    cursor.execute('PRAGMA journal_mode=WAL;')
+    conn.commit()
+    conn.close()
+
+
+# 创建一个数据库连接池的上下文管理器
+@contextmanager
+def get_db_connection():
+    conn = sqlite3.connect('chat.db', timeout=10)  # 增加超时时间
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def encrypt_token(data):
@@ -21,11 +41,10 @@ def encrypt_token(data):
 
 
 async def verify_user(username, token):
-    conn = sqlite3.connect('chat.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT token FROM users WHERE username = ?', (username,))
-    result = cursor.fetchone()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT token FROM users WHERE username = ?', (username,))
+        result = cursor.fetchone()
 
     if result and result[0] == token:
         return True
@@ -36,10 +55,10 @@ async def login(message, websocket):
     username = message.get('username')
     password = message.get('password')
 
-    conn = sqlite3.connect('chat.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT password FROM users WHERE username = ?', (username,))
-    result = cursor.fetchone()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT password FROM users WHERE username = ?', (username,))
+        result = cursor.fetchone()
 
     if result:
         stored_password = result[0]
@@ -47,38 +66,36 @@ async def login(message, websocket):
             current_timestamp = str(int(time.time()))
             encrypted_token = encrypt_token(current_timestamp)
 
-            cursor.execute('UPDATE users SET islogin = TRUE, token = ? WHERE username = ?', (encrypted_token, username))
-            conn.commit()
-            conn.close()
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE users SET islogin = TRUE, token = ? WHERE username = ?',
+                               (encrypted_token, username))
+                conn.commit()
 
             connected_users[username] = websocket
-
             return {"message": "Login successful", "token": encrypted_token}
         else:
-            conn.close()
             return {"message": "Wrong password"}
     else:
-        conn.close()
         return {"message": "User not found"}
 
 
 async def register(message):
     username = message.get('username')
     password = message.get('password')
-    print(username, password)
-    conn = sqlite3.connect('chat.db')
-    cursor = conn.cursor()
 
-    cursor.execute('SELECT username FROM users WHERE username = ?', (username,))
-    result = cursor.fetchone()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT username FROM users WHERE username = ?', (username,))
+        result = cursor.fetchone()
 
     if result:
-        conn.close()
         return {"message": "Username already registered"}
     else:
-        cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, password))
-        conn.commit()
-        conn.close()
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('INSERT INTO users (username, password) VALUES (?, ?)', (username, password))
+            conn.commit()
         return {"message": "Registered successfully"}
 
 
@@ -91,27 +108,24 @@ async def chat(message, websocket):
     if not await verify_user(sender, token):
         return {"status": "error", "message": "Invalid token or user."}
 
-    conn = sqlite3.connect('chat.db')
-    cursor = conn.cursor()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT islogin FROM users WHERE username = ?', (receiver,))
+        result = cursor.fetchone()
 
-    cursor.execute('SELECT islogin FROM users WHERE username = ?', (receiver,))
-    result = cursor.fetchone()
-    print(result)
     if not result or not result[0]:
-        conn.close()
         return {"status": "error", "message": "The receiver is not online."}
 
-    cursor.execute('''
-                   INSERT INTO chat_messages (sender, receiver, message, timestamp)
-                   VALUES (?, ?, ?, ?)
-                   ''', (sender, receiver, content, time.strftime('%Y-%m-%d %H:%M:%S')))
-    current_timestamp = str(int(time.time()))
-    encrypted_token = encrypt_token(current_timestamp)
-
-    cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, sender))
-
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+                       INSERT INTO chat_messages (sender, receiver, message, timestamp)
+                       VALUES (?, ?, ?, ?)
+                       ''', (sender, receiver, content, time.strftime('%Y-%m-%d %H:%M:%S')))
+        current_timestamp = str(int(time.time()))
+        encrypted_token = encrypt_token(current_timestamp)
+        cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, sender))
+        conn.commit()
 
     if receiver in connected_users:
         receiver_ws = connected_users[receiver]
@@ -127,48 +141,72 @@ async def pals(message):
     if not await verify_user(username, token):
         return {"status": "error", "message": "Invalid token or user."}
 
-    conn = sqlite3.connect('chat.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT distinct receiver FROM chat_messages WHERE sender = ?', (username,))
-    result = cursor.fetchall()
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT DISTINCT receiver FROM chat_messages WHERE sender = ? UNION SELECT DISTINCT sender  FROM chat_messages WHERE receiver = ?',
+            (username, username))
+        result = cursor.fetchall()
 
     pals_list = [item[0] for item in result]
 
     current_timestamp = str(int(time.time()))
     encrypted_token = encrypt_token(current_timestamp)
 
-    cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+        conn.commit()
 
-    conn.commit()
-    conn.close()
     return {"status": "success", "pals": pals_list, "token": encrypted_token}
+
+
+async def users(message):
+    username = message.get('username')
+    token = message.get('token')
+    if not await verify_user(username, token):
+        return {"status": "error", "message": "Invalid token or user."}
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT distinct username FROM users')
+        result = cursor.fetchall()
+        result = [item[0] for item in result]
+        current_timestamp = str(int(time.time()))
+        encrypted_token = encrypt_token(current_timestamp)
+        cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+        conn.commit()
+
+    return {
+        "status": "success",
+        "users": result,
+        "token": encrypted_token
+    }
 
 
 async def chats(message, websocket):
     username = message.get('username')
     token = message.get('token')
     to = message.get('to')
-    print(username, to)
     if not await verify_user(username, token):
         return {"status": "error", "message": "Invalid token or user."}
-    conn = sqlite3.connect('chat.db')
-    cursor = conn.cursor()
-    query = '''
-            SELECT * \
-            FROM chat_messages
-            WHERE (sender = ? AND receiver = ?)
-               OR (sender = ? AND receiver = ?) \
-            '''
 
-    cursor.execute(query, (username, to, to, username))
-    result = cursor.fetchall()
-    current_timestamp = str(int(time.time()))
-    encrypted_token = encrypt_token(current_timestamp)
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        query = '''
+                SELECT * \
+                FROM chat_messages
+                WHERE (sender = ? AND receiver = ?)
+                   OR (sender = ? AND receiver = ?) \
+                '''
 
-    cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+        cursor.execute(query, (username, to, to, username))
+        result = cursor.fetchall()
+        current_timestamp = str(int(time.time()))
+        encrypted_token = encrypt_token(current_timestamp)
+        cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+        conn.commit()
 
-    conn.commit()
-    conn.close()
     return {"status": "success", "chats": result, "token": encrypted_token}
 
 
@@ -177,11 +215,10 @@ async def logout(websocket):
         if ws == websocket:
             del connected_users[username]
 
-            conn = sqlite3.connect('chat.db')
-            cursor = conn.cursor()
-            cursor.execute('UPDATE users SET islogin = FALSE, token = NULL WHERE username = ?', (username,))
-            conn.commit()
-            conn.close()
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE users SET islogin = FALSE, token = NULL WHERE username = ?', (username,))
+                conn.commit()
             break
     await websocket.close()
     return {"message": "Logout successful"}
@@ -200,6 +237,8 @@ async def handle_action(message, websocket):
         result = await pals(message)
     elif message.get('action') == 'chats':
         result = await chats(message, websocket)
+    elif message.get('action') == 'users':
+        result = await users(message)
     else:
         result = {"message": "Unknown action"}
     return result
@@ -219,6 +258,7 @@ async def handle(websocket):
 
 
 async def main():
+    enable_wal_mode()  # 启用WAL模式
     start_server = await websockets.serve(handle, "0.0.0.0", 8765)
     print("Listening on ws://localhost:8765")
     await start_server.wait_closed()
