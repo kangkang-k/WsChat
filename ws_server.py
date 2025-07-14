@@ -65,7 +65,7 @@ async def login(message, websocket):
 async def register(message):
     username = message.get('username')
     password = message.get('password')
-
+    print(username, password)
     conn = sqlite3.connect('chat.db')
     cursor = conn.cursor()
 
@@ -96,6 +96,7 @@ async def chat(message, websocket):
 
     cursor.execute('SELECT islogin FROM users WHERE username = ?', (receiver,))
     result = cursor.fetchone()
+    print(result)
     if not result or not result[0]:
         conn.close()
         return {"status": "error", "message": "The receiver is not online."}
@@ -130,27 +131,45 @@ async def pals(message):
     cursor = conn.cursor()
     cursor.execute('SELECT distinct receiver FROM chat_messages WHERE sender = ?', (username,))
     result = cursor.fetchall()
-    conn.close()
 
     pals_list = [item[0] for item in result]
 
-    return {"status": "success", "pals": pals_list}
+    current_timestamp = str(int(time.time()))
+    encrypted_token = encrypt_token(current_timestamp)
+
+    cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+
+    conn.commit()
+    conn.close()
+    return {"status": "success", "pals": pals_list, "token": encrypted_token}
 
 
-async def handle_action(message, websocket):
-    if message.get('action') == 'login':
-        result = await login(message, websocket)
-    elif message.get('action') == 'register':
-        result = await register(message)
-    elif message.get('action') == 'chat':
-        result = await chat(message, websocket)
-    elif message.get('action') == 'logout':
-        result = await logout(websocket)
-    elif message.get('action') == 'pals':
-        result = await pals(message)
-    else:
-        result = {"message": "Unknown action"}
-    return result
+async def chats(message, websocket):
+    username = message.get('username')
+    token = message.get('token')
+    to = message.get('to')
+    print(username, to)
+    if not await verify_user(username, token):
+        return {"status": "error", "message": "Invalid token or user."}
+    conn = sqlite3.connect('chat.db')
+    cursor = conn.cursor()
+    query = '''
+            SELECT * \
+            FROM chat_messages
+            WHERE (sender = ? AND receiver = ?)
+               OR (sender = ? AND receiver = ?) \
+            '''
+
+    cursor.execute(query, (username, to, to, username))
+    result = cursor.fetchall()
+    current_timestamp = str(int(time.time()))
+    encrypted_token = encrypt_token(current_timestamp)
+
+    cursor.execute('UPDATE users SET token = ? WHERE username = ?', (encrypted_token, username))
+
+    conn.commit()
+    conn.close()
+    return {"status": "success", "chats": result, "token": encrypted_token}
 
 
 async def logout(websocket):
@@ -166,6 +185,24 @@ async def logout(websocket):
             break
     await websocket.close()
     return {"message": "Logout successful"}
+
+
+async def handle_action(message, websocket):
+    if message.get('action') == 'login':
+        result = await login(message, websocket)
+    elif message.get('action') == 'register':
+        result = await register(message)
+    elif message.get('action') == 'chat':
+        result = await chat(message, websocket)
+    elif message.get('action') == 'logout':
+        result = await logout(websocket)
+    elif message.get('action') == 'pals':
+        result = await pals(message)
+    elif message.get('action') == 'chats':
+        result = await chats(message, websocket)
+    else:
+        result = {"message": "Unknown action"}
+    return result
 
 
 async def handle(websocket):
